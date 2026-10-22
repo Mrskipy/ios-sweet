@@ -39,8 +39,9 @@ VTIMER_INTID = 19
 QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
 # QEMU virt: 32 virtio-mmio windows at 0x0a000000 + 0x200*i, SPI 48+i.
-# The blk device only needs the window; the driver polls (no interrupts).
-QEMU_VIRTIO_BLK, QEMU_VIRTIO_MMIO_SIZE = 0x0a000000, 0x200
+# The blk device only needs the bank; the driver polls (no interrupts) and
+# walks the 32 windows because QEMU does not promise which slot it fills.
+QEMU_VIRTIO_BLK, QEMU_VIRTIO_MMIO_SIZE = 0x0a000000, 0x200 * 32
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 

@@ -12,10 +12,10 @@ index 6630131..4c533c9 100644
  bsd/dev/sweet_touch.c			standard
 diff --git a/bsd/dev/sweet_virtio_blk.c b/bsd/dev/sweet_virtio_blk.c
 new file mode 100644
-index 0000000..73f375d
+index 0000000..9b215f7
 --- /dev/null
 +++ b/bsd/dev/sweet_virtio_blk.c
-@@ -0,0 +1,625 @@
+@@ -0,0 +1,657 @@
 +/*
 + * SWEET virtio-blk root device (read-only), QEMU virt.
 + *
@@ -103,6 +103,8 @@ index 0000000..73f375d
 +#define VQ_SIZE     8u
 +#define XFER_SIZE   (64u << 10)         /* per request; QEMU offers no limit */
 +#define SECTOR_SIZE 512u
++#define WINDOW_SIZE 0x200u              /* one virtio-mmio transport */
++#define WINDOWS     32u                 /* QEMU virt: 32 transports in a bank */
 +#define CMD_TIMEOUT_NS (5ull * NSEC_PER_SEC)
 +#define RESET_TIMEOUT_NS (1ull * NSEC_PER_SEC)
 +
@@ -121,15 +123,15 @@ index 0000000..73f375d
 +};
 +
 +struct vring_used_elem {
-+	uint32_t id;
-+	uint32_t len;
++	volatile uint32_t id;
++	volatile uint32_t len;
 +};
 +
 +struct vring_used {
-+	uint16_t flags;
-+	uint16_t idx;
++	volatile uint16_t flags;
++	volatile uint16_t idx;
 +	struct vring_used_elem ring[VQ_SIZE];
-+	uint16_t avail_event;
++	volatile uint16_t avail_event;
 +};
 +
 +struct virtio_blk_req {
@@ -155,6 +157,7 @@ index 0000000..73f375d
 +	uint16_t avail_idx;
 +	uint16_t used_idx;
 +	uint32_t secsize;
++	uint32_t window;                /* index inside the virtio-mmio bank */
 +	int bmajor, cmajor;
 +	dev_t bdev;
 +	bool ready;
@@ -295,19 +298,30 @@ index 0000000..73f375d
 +	DTEntry node;
 +	uintptr_t const *reg = NULL;
 +	unsigned int size = 0;
-+	uint64_t deadline;
++	vm_offset_t base = 0;
++	vm_size_t bank = WINDOW_SIZE * WINDOWS;
++	uint32_t win;
 +	uint32_t val;
 +	int error;
 +
++	/*
++	 * QEMU virt builds a bank of 32 modern transports at 0x0a000000 and
++	 * attaches -device virtio-blk-device to one of them (the highest free
++	 * one today, but that is not an interface guarantee), so walk the bank
++	 * looking for DeviceID 2 instead of assuming a slot.
++	 */
 +	if (SecureDTLookupEntry(NULL, "/sweet-vblk", &node) == kSuccess &&
 +	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) == kSuccess &&
 +	    size >= 2 * sizeof(uintptr_t)) {
-+		sv.regs = ml_io_map(reg[0], reg[1]);
++		base = reg[0];
++		if (reg[1] >= WINDOW_SIZE && reg[1] < bank) {
++			bank = reg[1];
++		}
 +	} else {
-+		char base[32] = "0x0a000000";
-+		PE_parse_boot_argn("vblk", base, sizeof(base));
++		char str[32] = "0x0a000000";
++		PE_parse_boot_argn("vblk", str, sizeof(str));
 +		uint64_t addr = 0;
-+		for (const char *p = base; *p; p++) {
++		for (const char *p = str; *p; p++) {
 +			uint32_t d;
 +			if (*p >= '0' && *p <= '9') {
 +				d = (uint32_t)(*p - '0');
@@ -322,20 +336,38 @@ index 0000000..73f375d
 +			}
 +			addr = (addr << 4) | d;
 +		}
-+		sv.regs = ml_io_map((vm_offset_t)addr, 0x200);
++		base = (vm_offset_t)addr;
 +	}
++	if (!base) {
++		printf("SWEET VBLK: no device tree node and no vblk= boot-arg\n");
++		return ENXIO;
++	}
++	sv.regs = ml_io_map(base, bank);
 +	if (!sv.regs) {
-+		printf("SWEET VBLK: cannot map the MMIO window\n");
++		printf("SWEET VBLK: cannot map 0x%lx/0x%lx\n",
++		    (unsigned long)base, (unsigned long)bank);
 +		return ENXIO;
 +	}
-+	if (vblk_rd(VIRTIO_MMIO_MAGIC_VALUE) != VIRTIO_MAGIC ||
-+	    vblk_rd(VIRTIO_MMIO_VERSION) != VIRTIO_VERSION_MODERN ||
-+	    vblk_rd(VIRTIO_MMIO_DEVICE_ID) != VIRTIO_ID_BLOCK) {
-+		printf("SWEET VBLK: not a modern virtio-blk device (magic 0x%x version %u id %u)\n",
-+		    vblk_rd(VIRTIO_MMIO_MAGIC_VALUE), vblk_rd(VIRTIO_MMIO_VERSION),
-+		    vblk_rd(VIRTIO_MMIO_DEVICE_ID));
++
++	for (win = 0; (win + 1) * WINDOW_SIZE <= bank; win++) {
++		vm_offset_t w = sv.regs + win * WINDOW_SIZE;
++		uint32_t magic = *(volatile uint32_t *)(w + VIRTIO_MMIO_MAGIC_VALUE);
++		uint32_t ver = *(volatile uint32_t *)(w + VIRTIO_MMIO_VERSION);
++		uint32_t id = *(volatile uint32_t *)(w + VIRTIO_MMIO_DEVICE_ID);
++		if (magic == VIRTIO_MAGIC && ver == VIRTIO_VERSION_MODERN && id == VIRTIO_ID_BLOCK) {
++			break;
++		}
++	}
++	if ((win + 1) * WINDOW_SIZE > bank) {
++		uint32_t magic = *(volatile uint32_t *)(sv.regs + VIRTIO_MMIO_MAGIC_VALUE);
++		uint32_t ver = *(volatile uint32_t *)(sv.regs + VIRTIO_MMIO_VERSION);
++		uint32_t id = *(volatile uint32_t *)(sv.regs + VIRTIO_MMIO_DEVICE_ID);
++		printf("SWEET VBLK: no block device in 0x%lx/0x%lx (window 0: magic 0x%x version %u id %u)\n",
++		    (unsigned long)base, (unsigned long)bank, magic, ver, id);
 +		return ENXIO;
 +	}
++	sv.window = win;
++	sv.regs += win * WINDOW_SIZE;
 +
 +	if (kmem_alloc_contig(kernel_map, &sv.dma, DMA_SIZE, PAGE_MASK, 0, 0,
 +	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
@@ -423,8 +455,8 @@ index 0000000..73f375d
 +
 +	{
 +		const uint8_t *b = (const uint8_t *)(sv.dma + DMA_DATA);
-+		printf("SWEET VBLK: virtio-mmio at 0x%lx, %llu MiB, first sector %02x%02x%02x%02x%02x%02x%02x%02x read-only\n",
-+		    (unsigned long)sv.regs, sv.capacity * SECTOR_SIZE >> 20,
++		printf("SWEET VBLK: virtio-mmio window %u at 0x%lx, %llu MiB, first sector %02x%02x%02x%02x%02x%02x%02x%02x read-only\n",
++		    sv.window, (unsigned long)sv.regs, sv.capacity * SECTOR_SIZE >> 20,
 +		    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
 +	}
 +

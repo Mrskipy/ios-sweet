@@ -52,9 +52,31 @@ this repo and now works on Windows, but it is kernel-only by design.
   `DLIL: running SUM16 self-tests ... PASSED`. `result.json`:
   `no_panic_observed`, `unknown_glyphs: 0`. Evidence in
   `pc/evidence/2026-10-21-qemu-windows-fb.txt` / `-fb.png`.
+- **M1, root device on virtio-blk (2026-10-21, in CI):** commit `0eae2e8`,
+  patch `xnu/patches/0080-sweet-virtio-blk-qemu.patch` (650 lines, 3 files),
+  run `39719289897`.
+  - `bsd/dev/sweet_virtio_blk.c`: modern virtio-mmio (version 2, split queue of 8,
+    polled with `delay(1)`, read-only), one `kmem_alloc_contig` of 0x11000 bytes
+    (desc/avail/used + 64 KiB bounce) with `flush_dcache64(pa, len, TRUE)` around
+    every request, `vblk0`/`rvblk0` + DKIOC* ioctls. Shape copied from `sweet_ufs.c`.
+  - Why not `UniXNU/NativeVirtioBlock`: it is an `IOBlockStorageDevice`, and this
+    kernel has no IOStorageFamily (`llvm-nm`: only `_gIOBlockStorageDeviceKey`,
+    `_gIOMediaKey`, no `IOBlockStorageDriver`/`IOMedia` classes), so the BSD disk
+    has to be a `bdevsw` driver. Its virtqueue/MMIO logic is the reference.
+  - `mkadt.py --qemu` adds `/sweet-vblk` (`compatible = virtio,mmio`,
+    `reg = 0x0a000000/0x200`, `dma-coherent`); `qemu-sweet.py --blk` adds
+    `-global virtio-mmio.force-legacy=false` + `virtio-blk-device` read-only;
+    `run-pc.ps1 -Blk <img> -VblkProbe` (boot-arg `vblkprobe=1`) and `rd=vblk0`.
+  - `pc/cc-one.py`: compiles one file with the exact `.CFLAGS` of the CI build
+    tree (paths remapped, `-ffreestanding`, clang resource dir for `stdatomic.h`).
+    Verified: `sweet_ufs.c` and `sweet_virtio_blk.c` compile clean locally against
+    `pc/out-buildtree` (artifact `xnu-buildtree`). C++ files cannot be checked
+    locally: Apple clang's `__builtin_xnu_type_signature` does not exist in LLVM 23.
+  - Patch verified with `git apply --check` on the pristine (LF) post-0028 tree.
+  - Test image `pc/out-run/test-disk.img` (64 MiB, `SWEETVBLK` at LBA 0), not in git.
 - No iOS root filesystem: the boot uses the `sweet-init` RAM disk (mockfs/memdev
-  `md0`), not the iPhone X IPSW. If the current series expects HFS+, the next step is
-  an `mkfs.hfsplus` image (Linux/WSL) containing `/sbin/launchd`.
+  `md0`), not the iPhone X IPSW. `rd=vblk0` only becomes useful with an HFS+ image
+  (`mkfs.hfsplus`, Linux/WSL) holding at least `/sbin/launchd`.
 - iOS userland (launchd/SpringBoard) on QEMU stays out of reach without device models
   (virtio-blk/GPU/input) and an IPSW the user must supply. Prior art: eShard (iOS 14),
   Inferno/qemu-t8030 (iPhone 11, iOS 14), MaliosDark (iOS 27, SpringBoard no pixels).
