@@ -38,6 +38,9 @@ VTIMER_INTID = 19
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
 QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
+# QEMU virt: 32 virtio-mmio windows at 0x0a000000 + 0x200*i, SPI 48+i.
+# The blk device only needs the window; the driver polls (no interrupts).
+QEMU_VIRTIO_BLK, QEMU_VIRTIO_MMIO_SIZE = 0x0a000000, 0x200
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 
@@ -204,6 +207,14 @@ def build(seed=None, qemu=False, highmem=False):
         ('reg', u64(UFS, UFS_SIZE)),
     ])
 
+    # bsd/dev/sweet_virtio_blk.c: QEMU virt's first virtio-mmio window.
+    vblk = node('sweet-vblk', [
+        ph(),
+        ('compatible', cstr('virtio,mmio')),
+        ('reg', u64(QEMU_VIRTIO_BLK, QEMU_VIRTIO_MMIO_SIZE)),
+        ('dma-coherent', b''),
+    ])
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -238,7 +249,7 @@ def build(seed=None, qemu=False, highmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product + ([] if qemu else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product + ([vblk] if qemu else [ufs]))
 
 
 if __name__ == '__main__':

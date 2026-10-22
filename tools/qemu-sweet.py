@@ -275,6 +275,7 @@ def main():
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding (uses llvm-nm)')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
     ap.add_argument('--live-serial', action='store_true', help='stream serial console output to stdout in real time')
+    ap.add_argument('--blk', help='raw disk image attached as a read-only virtio-blk device')
     ap.add_argument('--check-env', action='store_true', help='check QEMU installation and dependencies without running a payload')
     a = ap.parse_args()
 
@@ -330,6 +331,17 @@ def main():
            '-device', f'loader,addr={STUB_PA:#x},cpu-num=0']
     if a.gdb:
         cmd += ['-S', '-gdb', 'tcp::1234']
+
+    if a.blk:
+        # QEMU runs with cwd=OUTDIR; a relative path avoids the ":" that its
+        # option parser splits on (see the cwd note above).
+        rel = os.path.relpath(os.path.abspath(a.blk), out).replace('\\', '/')
+        if ':' in rel:
+            ap.error('--blk must live on the same drive as OUTDIR')
+        cmd += ['-global', 'virtio-mmio.force-legacy=false',
+                '-drive', f'file={rel},if=none,id=vblk,format=raw,read-only=on',
+                '-device', 'virtio-blk-device,drive=vblk']
+        print(f'virtio-blk: {rel}', file=sys.stderr)
 
     p = None
     serial_file = f'{out}/serial.txt'

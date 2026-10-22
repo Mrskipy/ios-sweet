@@ -22,6 +22,8 @@ param(
     [switch]$Highmem,
     [switch]$NoRamdisk,
     [switch]$LiveSerial,
+    [string]$Blk = '',
+    [switch]$VblkProbe,
     [string]$Cpu = 'cortex-a76'
 )
 
@@ -66,6 +68,7 @@ if (-not $NoRamdisk) {
 
 $cmdline = 'debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress'
 if ($ramdisk) { $cmdline += ' rd=md0' }
+if ($VblkProbe) { $cmdline += ' vblkprobe=1' }
 $payload = Join-Path $out 'payload.bin'
 $mk = @((Join-Path $root 'tools/mkpayload.py'), $Kernel, (Join-Path $out 'qemu.adt'), $payload, '--cmdline', $cmdline)
 if ($ramdisk) { $mk += @('--ramdisk', $ramdisk) }
@@ -75,6 +78,7 @@ if ($LASTEXITCODE -ne 0) { throw 'mkpayload.py fallo' }
 
 $run = @((Join-Path $root 'tools/qemu-sweet.py'), $payload, (Join-Path $out 'run'),
          '--secs', $Secs, '--kernel', $Kernel, '--fail-on-panic', '--cpu', $Cpu)
+if ($Blk) { $run += @('--blk', $Blk) }
 if ($LiveSerial) { $run += '--live-serial' }
 Write-Host "[*] QEMU, $Secs s (TCG: el arranque real tarda minutos)" -ForegroundColor Cyan
 & $py @run
