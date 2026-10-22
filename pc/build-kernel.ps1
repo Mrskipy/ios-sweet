@@ -49,8 +49,11 @@ try {
 
     if ($Fork) {
         $origin = (& gh repo view --json nameWithOwner -q .nameWithOwner)
+        if ($origin -eq 'dipa-studio/ios-sweet') { $origin = 'dipa-studio/ios-sweet' }
         Write-Host "[*] fork de $origin" -ForegroundColor Cyan
-        & gh repo fork $origin --clone=false --remote=false
+        # Sin --remote/--remote-name: gh rechaza --remote cuando le pasas un repo
+        # explicito. Si no existe, crea el fork y luego fijamos el remoto a mano.
+        & gh repo fork $origin --clone=false
         if ($LASTEXITCODE -ne 0) { throw 'gh repo fork fallo' }
         $Repo = (& gh api user -q .login) + '/' + $origin.Split('/')[1]
         if (-not (git remote | Select-String -Quiet '^fork$')) {
@@ -61,13 +64,22 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'git push fallo' }
     }
 
-    Write-Host "[*] lanzando xnu.yml en $Repo ($Ref)" -ForegroundColor Cyan
-    & gh workflow run xnu.yml -R $Repo --ref $Ref
-    if ($LASTEXITCODE -ne 0) { throw 'gh workflow run fallo' }
-    Start-Sleep -Seconds 5
-
-    $runId = (& gh run list -R $Repo --workflow xnu.yml -L 1 --json databaseId -q '.[0].databaseId')
-    if (-not $runId) { throw 'no encuentro el run recien lanzado' }
+    Write-Host "[*] buscando el run (el push a xnu/patches ya dispara xnu.yml)" -ForegroundColor Cyan
+    $runId = $null
+    for ($i = 0; $i -lt 24 -and -not $runId; $i++) {
+        Start-Sleep -Seconds 5
+        $runId = (& gh run list -R $Repo --workflow xnu.yml -L 1 --json databaseId -q '.[0].databaseId' 2>$null)
+    }
+    if (-not $runId) {
+        Write-Host '[*] no hay run del push; lo lanzo a mano' -ForegroundColor Cyan
+        & gh workflow run xnu.yml -R $Repo --ref $Ref
+        if ($LASTEXITCODE -ne 0) { throw 'gh workflow run fallo' }
+        for ($i = 0; $i -lt 24 -and -not $runId; $i++) {
+            Start-Sleep -Seconds 5
+            $runId = (& gh run list -R $Repo --workflow xnu.yml -L 1 --json databaseId -q '.[0].databaseId' 2>$null)
+        }
+    }
+    if (-not $runId) { throw 'no encuentro ningun run de xnu.yml' }
     Write-Host "[*] run $runId; esperando (5-15 min de runner macOS)..." -ForegroundColor Cyan
     & gh run watch $runId -R $Repo --exit-status
     $status = $LASTEXITCODE

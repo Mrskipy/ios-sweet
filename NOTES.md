@@ -39,12 +39,22 @@ this repo and now works on Windows, but it is kernel-only by design.
 
 **Not done / next:**
 
-- No XNU kernel was built here: the build needs a `macos-14` runner (`iig`, cctools,
-  SDK). `pc/build-kernel.ps1 -Fork` is the path (repo is public -> free macOS minutes).
-  The kernel is a CI artifact and is not in git (`xnu/out/` is ignored).
-- `run-pc.ps1` defaults to a RAM-disk `sweet-init` (`rd=md0`). If the current series
-  expects an HFS+ root instead of the raw image, the PID 1 milestone needs an
-  `mkfs.hfsplus` image (Linux/WSL) - not available on this Windows box.
+- ~~No XNU kernel was built here~~ **Kernel built and booted (2026-10-21).** Fork
+  `Mrskipy/ios-sweet`, workflow run `39713603840` (8m14s, macOS-14):
+  `kernel.development.sweet` 17,206,064 B SHA-256
+  `577f8b6867c10a832fe1218891f11341d2dc3c11d78f2ac93720c78b029ec3cc`.
+  `pc/run-pc.ps1 -Secs 45` on Windows/QEMU 11.1.0 TCG (cortex-a76, 4 GiB, `rd=md0`
+  + `sweet-init` RAM disk) reaches:
+  `Added memory device md0`, `BSD root: md0`, `load_init_program: attempting to load
+  /sbin/launchd`, `*** SWEET userspace: init running as PID 1 ***`, then the SWEET
+  drivers (AKS, WDT, IOSurface, HID buttons/touch, battery, AppleCLCD 1080x2400
+  presented as 1125x2436), AMFI/Sandbox policies, HFS, `mbinit: done [64 MB ...]`,
+  `DLIL: running SUM16 self-tests ... PASSED`. `result.json`:
+  `no_panic_observed`, `unknown_glyphs: 0`. Evidence in
+  `pc/evidence/2026-10-21-qemu-windows-fb.txt` / `-fb.png`.
+- No iOS root filesystem: the boot uses the `sweet-init` RAM disk (mockfs/memdev
+  `md0`), not the iPhone X IPSW. If the current series expects HFS+, the next step is
+  an `mkfs.hfsplus` image (Linux/WSL) containing `/sbin/launchd`.
 - iOS userland (launchd/SpringBoard) on QEMU stays out of reach without device models
   (virtio-blk/GPU/input) and an IPSW the user must supply. Prior art: eShard (iOS 14),
   Inferno/qemu-t8030 (iPhone 11, iOS 14), MaliosDark (iOS 27, SpringBoard no pixels).

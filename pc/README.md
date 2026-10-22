@@ -125,9 +125,9 @@ decodificar. **Ausencia de pánico no es arranque completo**: es una foto.
 ### Qué esperar (y cuánto tarda)
 
 - QEMU en Windows es **TCG puro**: no hay KVM para ARM en Windows (WHPX sólo
-  virtualiza x86). Todo se interpreta. En el teléfono el arranque tarda minutos;
-  aquí cuenta con **decenas de minutos** para llegar a BSD init. Usa `-Secs 600`
-  o más y `-LiveSerial` para no mirar una pantalla vacía.
+  virtualiza x86). Aun así, medido en esta máquina: **`PID 1` aparece dentro de
+  los primeros 45 s** de reloj real. Usa `-Secs 45` para fotografiar el log de
+  arranque y `-Secs 600` si quieres ver el init acumulando latidos.
 - Hitos razonables: mensajes del arnés → CPU/GIC/timer → pmap y memoria →
   `BSD initialization` → `load_init_program` → `SWEET userspace: init running as PID 1`.
 - Si se queda en `Waiting on IOMedia` sin RAM disk, es normal: no hay root.
@@ -195,8 +195,35 @@ Máquina: Windows 11 x86-64, QEMU 11.1.0 (winget), LLVM 23.1.4, Python 3.12.
    300 filas exacta. `regs.txt`: `PC=…b0000424 X00=…9c13c680 X01=…ff00ff00`.
    Es decir: `mkadt.py --qemu` → `mkpayload.py` → `qemu-sweet.py` → QMP
    (`stop`, `info registers`, `pmemsave`) → `fb.png` funcionan en Windows.
-3. **Kernel SWEET real: pendiente de compilar** (necesita macOS/CI; ver §5).
-   Sin ese artefacto no hay arranque de XNU que enseñar; el runner ya está listo.
+3. **Kernel SWEET real: arranca hasta userland.** Compilado en el fork
+   (`Mrskipy/ios-sweet`, run `39713603840`, 8m14s) y descargado:
+   `kernel.development.sweet` 17 206 064 B, SHA-256 `577f8b68…29ec3cc`.
+   Arranque en QEMU en Windows (TCG, `cortex-a76`, 4 GiB, RAM disk `rd=md0`):
+
+   ```
+   Added memory device md0/rmd0 (01000000/12000000)
+   BSD root: md0, major 1, minor 0
+   load_init_program: attempting to load /sbin/launchd
+   *** SWEET userspace: init running as PID 1 ***
+   SWEET CPU: 1/1 CPUs initialized, SGI1 verified
+   SWEET AKS: AppleKeyStore registered (no passcode, unlocked)
+   SWEET WDT: IOWatchdog registered (accepts check-ins, never fires)
+   SWEET HID: buttons/touch registered
+   SWEET FB: AppleCLCD 1080x2400 stride 4320 at 0x9c000000, presented as 1125x2436
+   Security policy loaded: SWEET built-in Mobile File Integrity (SWEET AMFI)
+   DLIL: running SUM16 self-tests ... PASSED
+   mbinit: done [64 MB total pool size, (42/21) split]
+   ```
+
+   `result.json`: `{"status": "no_panic_observed", "unknown_glyphs": 0}`.
+   En la pasada de 600 s, 72 latidos de `SWEET init: still alive` (el init de
+   prueba late cada 5 s): userland ejecutando syscalls y `select` de verdad.
+   Capturas en `pc/evidence/`: `2026-10-21-qemu-windows-fb.txt` (texto de la
+   pantalla decodificado del framebuffer) y `…-fb.png` (los 1080x2400 reales).
+
+   Tiempo en TCG Windows: en una pasada de **45 s de reloj real** ya está
+   `PID 1`; la pasada de 600 s acumuló 72 latidos (≈360 s de reloj de invitado).
+   El cuello de botella no es la emulación: es que aquí no hay root de iOS.
 
 Cambios necesarios para llegar aquí, y por qué:
 
