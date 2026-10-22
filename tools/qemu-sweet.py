@@ -29,9 +29,25 @@ STUB_PA = 0x40200000	# above the dtb QEMU places at RAM base
 BOOT_LINE_LENGTH = 608
 
 
+def find_qemu():
+    """qemu-system-aarch64 from PATH, or from the winget/MSI install dirs
+    (a fresh install does not update the PATH of an already-open shell)."""
+    for name in ('qemu-system-aarch64', 'qemu-system-aarch64.exe'):
+        found = shutil.which(name)
+        if found:
+            return found
+    for guess in (r'C:\Program Files\qemu\qemu-system-aarch64.exe',
+                  r'C:\Program Files (x86)\qemu\qemu-system-aarch64.exe',
+                  '/usr/local/bin/qemu-system-aarch64',
+                  '/opt/homebrew/bin/qemu-system-aarch64'):
+        if os.path.isfile(guess):
+            return guess
+    return None
+
+
 def check_qemu_dependency(cpu='cortex-a76'):
     """Verify qemu-system-aarch64 binary and CPU model support."""
-    qemu_bin = shutil.which('qemu-system-aarch64')
+    qemu_bin = find_qemu()
     if not qemu_bin:
         print('[!] Error: qemu-system-aarch64 not found in PATH.', file=sys.stderr)
         print('    Install instructions:', file=sys.stderr)
@@ -39,6 +55,7 @@ def check_qemu_dependency(cpu='cortex-a76'):
         print('      Ubuntu/Debian: sudo apt install qemu-system-arm', file=sys.stderr)
         print('      Fedora:         sudo dnf install qemu-system-aarch64', file=sys.stderr)
         print('      macOS:          brew install qemu', file=sys.stderr)
+        print('      Windows:        winget install SoftwareFreedomConservancy.QEMU', file=sys.stderr)
         return False
     try:
         ver = subprocess.check_output([qemu_bin, '--version'], text=True).splitlines()[0]
@@ -58,15 +75,30 @@ def check_qemu_dependency(cpu='cortex-a76'):
     return True
 
 
+def find_llvm_nm():
+    """llvm-nm from PATH or from the LLVM Windows/macOS install dirs."""
+    for name in ('llvm-nm', 'llvm-nm.exe'):
+        found = shutil.which(name)
+        if found:
+            return found
+    for guess in (r'C:\Program Files\LLVM\bin\llvm-nm.exe',
+                  '/usr/local/opt/llvm/bin/llvm-nm',
+                  '/opt/homebrew/opt/llvm/bin/llvm-nm'):
+        if os.path.isfile(guess):
+            return guess
+    return None
+
+
 def check_kernel_tools(kernel_path):
     """Verify llvm-nm is available when --kernel is specified."""
-    if not shutil.which('llvm-nm'):
+    if not find_llvm_nm():
         print('[!] Error: llvm-nm not found in PATH, required for --kernel font extraction.', file=sys.stderr)
         print('    Install instructions:', file=sys.stderr)
         print('      Arch Linux:    sudo pacman -S llvm', file=sys.stderr)
         print('      Ubuntu/Debian: sudo apt install llvm', file=sys.stderr)
         print('      Fedora:         sudo dnf install llvm', file=sys.stderr)
         print('      macOS:          brew install llvm', file=sys.stderr)
+        print('      Windows:        winget install LLVM.LLVM', file=sys.stderr)
         return False
     if not os.path.isfile(kernel_path):
         print(f'[!] Error: kernel file does not exist: {kernel_path}', file=sys.stderr)
@@ -161,12 +193,28 @@ def screen_result(screen, unknown):
     return {'status': status, 'unknown_glyphs': unknown, 'snapshot_only': True}
 
 
-def qmp(sock_path, *cmds, pmemsave=None):
+def free_port():
+    """Pick a loopback TCP port for QMP (unix sockets are not portable to Windows)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def qmp(port, *cmds, pmemsave=None, timeout=30.0):
     """Run QEMU human-monitor commands over QMP (synchronous, unlike the echoing HMP socket)."""
-    s = socket.socket(socket.AF_UNIX)
-    s.connect(sock_path)
+    deadline = time.time() + timeout
+    while True:
+        try:
+            s = socket.create_connection(('127.0.0.1', port), timeout=5)
+            break
+        except OSError:
+            if time.time() > deadline:
+                raise
+            time.sleep(0.1)
     f = s.makefile('rw')
-    f.readline()
+    f.readline()	# QMP greeting
 
     def call(execute, **args):
         f.write(json.dumps({'execute': execute, 'arguments': args}) + '\n')
@@ -183,7 +231,7 @@ def qmp(sock_path, *cmds, pmemsave=None):
         if 'error' in r:
             print(f'qmp {c!r}: {r["error"]}', file=sys.stderr)
         out.append(r.get('return', ''))
-    if pmemsave:	# native QMP: HMP's argument parser chokes on '-' in paths
+    if pmemsave:	# native QMP: HMP's argument parser chokes on '-' and ':' in paths
         r = call('pmemsave', val=pmemsave[0], size=pmemsave[1], filename=pmemsave[2])
         if 'error' in r:
             print(f'qmp pmemsave: {r["error"]}', file=sys.stderr)
@@ -232,7 +280,7 @@ def main():
 
     if a.check_env:
         ok = check_qemu_dependency(a.cpu)
-        if shutil.which('llvm-nm'):
+        if find_llvm_nm():
             print('[*] llvm-nm found in PATH', file=sys.stderr)
         else:
             print('[!] Optional: llvm-nm not found (needed only when using --kernel for text decoding)', file=sys.stderr)
@@ -253,7 +301,7 @@ def main():
     payload = open(a.payload, 'rb').read()
     font = None
     if a.kernel:
-        symbols = subprocess.check_output(['llvm-nm', '--defined-only', a.kernel], text=True)
+        symbols = subprocess.check_output([find_llvm_nm(), '--defined-only', a.kernel], text=True)
         fonts = [int(line.split()[0], 16) for line in symbols.splitlines()
                  if line.split()[-1:] == ['_iso_font']]
         if len(fonts) != 1:
@@ -267,17 +315,18 @@ def main():
     open(f'{out}/stub.bin', 'wb').write(stub(ba_pa, entry_pa))
     print(f'phys_base={phys_base:#x} boot_args={ba_pa:#x} entry={entry_pa:#x}', file=sys.stderr)
 
-    mon = f'{out}/mon.sock'
-    if os.path.exists(mon):
-        os.unlink(mon)
+    mon_port = free_port()
     # virt RAM starts at 0x40000000: cover the payload's RAM (mkadt.py --highmem needs 8G).
     mem_size = struct.unpack_from('<Q', payload, 0x40)[0]
     ram_gib = max(4, -(-(phys_base + mem_size - 0x40000000) // (1 << 30)))
-    cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', '1', '-m', f'{ram_gib}G',
-           '-nographic', '-serial', f'file:{out}/serial.txt', '-qmp', f'unix:{mon},server,nowait',
-           '-d', 'int,guest_errors,unimp', '-D', f'{out}/qemu.log', '-no-reboot',
-           '-device', f'loader,file={out}/ram.bin,addr={phys_base:#x},force-raw=on',
-           '-device', f'loader,file={out}/stub.bin,addr={STUB_PA:#x},force-raw=on',
+    qemu_bin = find_qemu() or 'qemu-system-aarch64'
+    # QEMU runs with cwd=OUTDIR and relative file names: ':' and '\' inside
+    # native Windows paths confuse the -device/-serial/-D argument parsers.
+    cmd = [qemu_bin, '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', '1', '-m', f'{ram_gib}G',
+           '-nographic', '-serial', 'file:serial.txt', '-qmp', f'tcp:127.0.0.1:{mon_port},server,nowait',
+           '-d', 'int,guest_errors,unimp', '-D', 'qemu.log', '-no-reboot',
+           '-device', f'loader,file=ram.bin,addr={phys_base:#x},force-raw=on',
+           '-device', f'loader,file=stub.bin,addr={STUB_PA:#x},force-raw=on',
            '-device', f'loader,addr={STUB_PA:#x},cpu-num=0']
     if a.gdb:
         cmd += ['-S', '-gdb', 'tcp::1234']
@@ -287,9 +336,9 @@ def main():
     serial_pos = 0
 
     try:
-        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, cwd=out)
         if a.gdb:
-            print('gdb stub on :1234; QMP socket:', mon, file=sys.stderr)
+            print(f'gdb stub on :1234; QMP on 127.0.0.1:{mon_port}', file=sys.stderr)
             p.wait()
             return 0
 
@@ -304,7 +353,8 @@ def main():
 
         result = {'status': 'qemu_exited', 'qemu_returncode': p.returncode}
         if p.poll() is None:
-            _, regs, *extra = qmp(mon, 'stop', 'info registers', *a.hmp, pmemsave=(FB_BASE, FB_STRIDE * FB_H, f'{out}/fb.raw'))
+            _, regs, *extra = qmp(mon_port, 'stop', 'info registers', *a.hmp,
+                                  pmemsave=(FB_BASE, FB_STRIDE * FB_H, 'fb.raw'))
             open(f'{out}/regs.txt', 'w').write(regs + ''.join(f'\n(qemu) {c}\n{r}' for c, r in zip(a.hmp, extra)))
             p.kill()
             p.wait()

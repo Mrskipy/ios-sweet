@@ -1,6 +1,55 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-15, latest)
+## Agent handoff / active work (2026-10-21, PC port)
+
+### >>> PC / QEMU-on-Windows PORT (this session, unrelated to the phone) <<<
+
+**Goal:** run the project on a PC (emulator or native). ANSWER: native is impossible
+(ARM64 + Qualcomm UFS/panel/PMIC/I2C, PSCI via `smc`); the emulator path exists in
+this repo and now works on Windows, but it is kernel-only by design.
+
+**What was added:**
+
+- `pc/` - Windows/Linux/macOS port of the QEMU harness:
+  - `pc/setup-pc.ps1` (deps: QEMU, LLVM, Python via winget; verifies `cortex-a76`),
+  - `pc/selftest.ps1` + `pc/selftest-kernel.S` (fake 12-instruction "kernel" that
+    paints the framebuffer; validates mkadt -> mkpayload -> qemu-sweet -> QMP capture
+    without Apple artifacts),
+  - `pc/build-kernel.ps1` (fork + `gh workflow run xnu.yml` + `gh run download`),
+  - `pc/run-pc.ps1` (ADT --qemu -> sweet-init RAM disk -> mkpayload rd=md0 -> QEMU),
+  - `pc/README.md` (verdict, why the GUI is not reachable, prior art, references).
+
+**Portability fixes in tools/ (needed for Windows, harmless elsewhere):**
+
+- `qemu-sweet.py`: QMP over loopback TCP instead of an AF_UNIX socket; QEMU runs with
+  `cwd=OUTDIR` and relative file names (native `C:\` paths and `,` break the
+  `-device`/`-serial`/`-D` parsers); `find_qemu()` / `find_llvm_nm()` fall back to the
+  winget/MSI install dirs because a fresh install does not update an open shell's PATH.
+- `mkpayload.py`: pick `__TEXT` by name and skip `__PAGEZERO` instead of assuming
+  `segs[0] == __TEXT`. XNU's Mach-O has no `__PAGEZERO`, so kernel payloads are
+  byte-identical; without this, a user-space test image (mkinit.py) could not be packed.
+
+**Evidence (Windows 11 x86-64, QEMU 11.1.0 TCG, LLVM 23.1.4, Python 3.12):**
+
+- Hand-assembled ARM64 stub writing to the PL011 of `virt` via `-device loader` +
+  `loader,addr=...,cpu-num=0` prints `OK` -> QEMU on Windows executes this boot pattern.
+- `pc/selftest.ps1` -> `[ok] el invitado escribio en el framebuffer (0xff00ff00)`,
+  `[ok] sin excepciones de CPU`, `fb.png` 1080x2400 with exactly 300 green rows,
+  `regs.txt` shows `X01=0xff00ff00`, `qemu.log` empty.
+
+**Not done / next:**
+
+- No XNU kernel was built here: the build needs a `macos-14` runner (`iig`, cctools,
+  SDK). `pc/build-kernel.ps1 -Fork` is the path (repo is public -> free macOS minutes).
+  The kernel is a CI artifact and is not in git (`xnu/out/` is ignored).
+- `run-pc.ps1` defaults to a RAM-disk `sweet-init` (`rd=md0`). If the current series
+  expects an HFS+ root instead of the raw image, the PID 1 milestone needs an
+  `mkfs.hfsplus` image (Linux/WSL) - not available on this Windows box.
+- iOS userland (launchd/SpringBoard) on QEMU stays out of reach without device models
+  (virtio-blk/GPU/input) and an IPSW the user must supply. Prior art: eShard (iOS 14),
+  Inferno/qemu-t8030 (iPhone 11, iOS 14), MaliosDark (iOS 27, SpringBoard no pixels).
+- `tools/validate-repo.py` is POSIX-only (needs `bash`; `cp1252` console chokes on the
+  `✓` glyph unless `PYTHONIOENCODING=utf-8`). Not part of the PC path.
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 

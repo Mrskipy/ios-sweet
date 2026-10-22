@@ -66,7 +66,7 @@ def apply_chained_fixups(buf, m):
     data_off, _ = m['fixups']
     _, starts_off, _, _, imports_count, _, _ = struct.unpack_from('<7I', buf, data_off)
     assert imports_count == 0, 'kernel has binds; only rebases are supported'
-    image_base = m['segs'][0]['vmaddr']		# __TEXT, holds the mach header
+    image_base = next(s['vmaddr'] for s in m['segs'] if s['name'] == '__TEXT')	# __TEXT holds the mach header
     seg_count, = struct.unpack_from('<I', buf, data_off + starts_off)
     nfix = 0
     for i in range(seg_count):
@@ -144,9 +144,12 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
-    segs = [s for s in m['segs'] if s['vmsize']]
-    text = m['segs'][0]
-    assert text['name'] == '__TEXT' and text['fileoff'] == 0
+    segs = [s for s in m['segs'] if s['vmsize'] and s['name'] != '__PAGEZERO']
+    # __PAGEZERO (4 GiB of PROT_NONE) only exists in user executables, such as
+    # the test init; XNU's Mach-O has no such segment. Pick __TEXT by name and
+    # not by index so both kinds of image pack the same way.
+    text = next(s for s in segs if s['name'] == '__TEXT')
+    assert text['fileoff'] == 0
     # virt_base: 32MB (16K-granule L2 block) below the mach header, so start.s's
     # block mapping that starts at the header's block begins exactly at phys_base.
     virt_base = text['vmaddr'] & ~(0x2000000 - 1)
